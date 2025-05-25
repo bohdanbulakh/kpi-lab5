@@ -3,5 +3,7 @@ FROM golang:1.24 AS build
 WORKDIR /go/src/practice-4
 COPY . .
 
+RUN go mod download
+
 ENV INTEGRATION_TEST=1
 ENTRYPOINT ["go", "test", "./integration"]

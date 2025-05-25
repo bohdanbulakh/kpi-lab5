@@ -6,6 +6,8 @@ import (
 	"os"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
 )
 
 const baseAddress = "http://balancer:8090"
@@ -19,14 +21,22 @@ func TestBalancer(t *testing.T) {
 		t.Skip("Integration test is not enabled")
 	}
 
-	// TODO: Реалізуйте інтеграційний тест для балансувальникка.
-	resp, err := client.Get(fmt.Sprintf("%s/api/v1/some-data", baseAddress))
-	if err != nil {
-		t.Error(err)
-	}
-	t.Logf("response from [%s]", resp.Header.Get("lb-from"))
-}
+	requestCount := 20
+	seenBackends := make(map[string]bool)
 
-func BenchmarkBalancer(b *testing.B) {
-	// TODO: Реалізуйте інтеграційний бенчмарк для балансувальникка.
+	for i := 0; i < requestCount; i++ {
+		resp, err := client.Get(fmt.Sprintf("%s/api/v1/some-data", baseAddress))
+		assert.NoError(t, err, "Request %d failed", i+1)
+		assert.NotNil(t, resp, "Response should not be nil for request %d", i+1)
+
+		if resp != nil {
+			backend := resp.Header.Get("lb-from")
+			assert.NotEmpty(t, backend, "Request %d missing lb-from header", i+1)
+			t.Logf("Request %d served by [%s]", i+1, backend)
+			seenBackends[backend] = true
+			_ = resp.Body.Close()
+		}
+	}
+
+	assert.GreaterOrEqual(t, len(seenBackends), 2, "Expected responses from at least 2 different backends")
 }
