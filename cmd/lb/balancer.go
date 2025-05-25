@@ -30,7 +30,7 @@ var (
 		"server3:8080",
 	}
 	trafficStats   = make(map[string]int64)
-	healthyServers = make([]string, 3)
+	healthyServers = []string{}
 	statsMutex     sync.Mutex
 	healthMutex    sync.RWMutex
 )
@@ -101,6 +101,7 @@ func chooseServerWithLeastTraffic() (string, error) {
 
 	healthMutex.RLock()
 	defer healthMutex.RUnlock()
+
 	for _, server := range healthyServers {
 		traffic := trafficStats[server]
 		if minTraffic == -1 || traffic < minTraffic {
@@ -118,21 +119,23 @@ func chooseServerWithLeastTraffic() (string, error) {
 func main() {
 	flag.Parse()
 
-	for _, server := range serversPool {
-		server := server
-		tempHealthy := make([]string, 3)
-		go func() {
-			for range time.Tick(10 * time.Second) {
+	go func() {
+		for range time.Tick(10 * time.Second) {
+			var tempHealthy []string
+			for _, server := range serversPool {
 				if health(server) {
 					tempHealthy = append(tempHealthy, server)
+					log.Println(server, "healthy: true")
+				} else {
+					log.Println(server, "healthy: false")
 				}
-				log.Println(server, "healthy:", health(server))
 			}
 			healthMutex.Lock()
 			healthyServers = tempHealthy
 			healthMutex.Unlock()
-		}()
-	}
+		}
+	}()
+
 	frontend := httptools.CreateServer(*port, http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
 		server, err := chooseServerWithLeastTraffic()
 		if err != nil {
