@@ -10,8 +10,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/roman-mazur/architecture-practice-4-template/httptools"
-	"github.com/roman-mazur/architecture-practice-4-template/signal"
+	"github.com/bohdanbulakh/kpi-lab4/httptools"
+	"github.com/bohdanbulakh/kpi-lab4/signal"
 )
 
 var (
