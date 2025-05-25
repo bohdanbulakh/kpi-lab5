@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/roman-mazur/architecture-practice-4-template/httptools"
@@ -28,6 +29,10 @@ var (
 		"server2:8080",
 		"server3:8080",
 	}
+	trafficStats   = make(map[string]int64)
+	healthyServers = make([]string, 3)
+	statsMutex     sync.Mutex
+	healthMutex    sync.RWMutex
 )
 
 func scheme() string {
@@ -45,10 +50,8 @@ func health(dst string) bool {
 	if err != nil {
 		return false
 	}
-	if resp.StatusCode != http.StatusOK {
-		return false
-	}
-	return true
+	defer resp.Body.Close()
+	return resp.StatusCode == http.StatusOK
 }
 
 func forward(dst string, rw http.ResponseWriter, r *http.Request) error {
@@ -72,9 +75,14 @@ func forward(dst string, rw http.ResponseWriter, r *http.Request) error {
 		log.Println("fwd", resp.StatusCode, resp.Request.URL)
 		rw.WriteHeader(resp.StatusCode)
 		defer resp.Body.Close()
-		_, err := io.Copy(rw, resp.Body)
+
+		written, err := io.Copy(rw, resp.Body)
 		if err != nil {
 			log.Printf("Failed to write response: %s", err)
+		} else {
+			statsMutex.Lock()
+			trafficStats[dst] += written
+			statsMutex.Unlock()
 		}
 		return nil
 	} else {
@@ -84,22 +92,54 @@ func forward(dst string, rw http.ResponseWriter, r *http.Request) error {
 	}
 }
 
+func chooseServerWithLeastTraffic() (string, error) {
+	var bestServer string
+	var minTraffic int64 = -1
+
+	statsMutex.Lock()
+	defer statsMutex.Unlock()
+
+	healthMutex.RLock()
+	defer healthMutex.RUnlock()
+	for _, server := range healthyServers {
+		traffic := trafficStats[server]
+		if minTraffic == -1 || traffic < minTraffic {
+			bestServer = server
+			minTraffic = traffic
+		}
+	}
+
+	if bestServer == "" {
+		return "", fmt.Errorf("no healthy servers")
+	}
+	return bestServer, nil
+}
+
 func main() {
 	flag.Parse()
 
-	// TODO: Використовуйте дані про стан сервера, щоб підтримувати список тих серверів, яким можна відправляти запит.
 	for _, server := range serversPool {
 		server := server
+		tempHealthy := make([]string, 3)
 		go func() {
 			for range time.Tick(10 * time.Second) {
+				if health(server) {
+					tempHealthy = append(tempHealthy, server)
+				}
 				log.Println(server, "healthy:", health(server))
 			}
+			healthMutex.Lock()
+			healthyServers = tempHealthy
+			healthMutex.Unlock()
 		}()
 	}
-
 	frontend := httptools.CreateServer(*port, http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
-		// TODO: Реалізуйте свій алгоритм балансувальника.
-		forward(serversPool[0], rw, r)
+		server, err := chooseServerWithLeastTraffic()
+		if err != nil {
+			http.Error(rw, "No healthy servers available", http.StatusServiceUnavailable)
+			return
+		}
+		forward(server, rw, r)
 	}))
 
 	log.Println("Starting load balancer...")
