@@ -97,5 +97,4 @@ func TestDb(t *testing.T) {
 			t.Errorf("Expected fewer segments after compaction (before: %d, after: %d)", before, after)
 		}
 	})
-
 }
