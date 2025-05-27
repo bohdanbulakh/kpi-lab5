@@ -2,6 +2,8 @@ package datastore
 
 import (
 	"bufio"
+	"crypto/sha1"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -79,26 +81,44 @@ func (db *Db) writerLoop() {
 
 func (db *Db) performPut(key, value string) error {
 	e := entry{key: key, value: value}
-	n, err := db.out.Write(e.Encode())
+	data := e.Encode()
+	dataLen := int64(len(data)) // Додано визначення довжини даних
+
+	db.indexLock.Lock()
+	defer db.indexLock.Unlock()
+
+	// Виправлено умову: перевіряємо, чи додавання нового запису перевищить ліміт
+	if db.outOffset+dataLen > db.segmentMaxSize {
+		if err := db.rotateSegment(); err != nil {
+			return fmt.Errorf("rotation failed: %w", err)
+		}
+	}
+
+	n, err := db.out.Write(data)
 	if err != nil {
 		return err
 	}
 
-	db.indexLock.Lock()
-	db.index[key] = recordRef{file: db.out.Name(), offset: db.outOffset}
-	db.outOffset += int64(n)
-	db.indexLock.Unlock()
-
-	if db.outOffset >= db.segmentMaxSize {
-		return db.rotateSegment()
+	db.index[key] = recordRef{
+		file:   db.out.Name(),
+		offset: db.outOffset,
 	}
+	db.outOffset += int64(n)
+
 	return nil
 }
 
 func (db *Db) Put(key, value string) error {
 	resp := make(chan error)
 	db.writeChan <- writeRequest{key: key, value: value, resp: resp}
-	return <-resp
+	err := <-resp
+
+	db.indexLock.RLock()
+	ref, ok := db.index[key]
+	db.indexLock.RUnlock()
+	fmt.Printf("PUT DONE: key=%s, ok=%v, file=%s, offset=%d\n", key, ok, ref.file, ref.offset)
+
+	return err
 }
 
 func (db *Db) Get(key string) (string, error) {
@@ -107,6 +127,7 @@ func (db *Db) Get(key string) (string, error) {
 	db.indexLock.RUnlock()
 
 	if !ok {
+		fmt.Printf("GET: key=%s NOT FOUND in index\n", key)
 		return "", ErrNotFound
 	}
 	file, err := os.Open(ref.file)
@@ -124,6 +145,12 @@ func (db *Db) Get(key string) (string, error) {
 	if _, err = record.DecodeFromReader(bufio.NewReader(file)); err != nil {
 		return "", err
 	}
+
+	hash := sha1.Sum([]byte(record.value))
+	if record.hash != hex.EncodeToString(hash[:]) {
+		return "", fmt.Errorf("data integrity error: hash mismatch")
+	}
+
 	return record.value, nil
 }
 
@@ -208,27 +235,38 @@ func (db *Db) Compact() error {
 	newIndex := make(hashIndex)
 	var offset int64
 
-	db.indexLock.RLock()
-	for key := range db.index {
-		val, err := db.Get(key)
+	db.indexLock.Lock()
+	defer db.indexLock.Unlock()
+
+	for key, ref := range db.index {
+		file, err := os.Open(ref.file)
 		if err != nil {
 			continue
 		}
-		e := entry{key: key, value: val}
-		data := e.Encode()
 
+		if _, err := file.Seek(ref.offset, io.SeekStart); err != nil {
+			file.Close()
+			continue
+		}
+
+		var rec entry
+		if _, err := rec.DecodeFromReader(bufio.NewReader(file)); err != nil {
+			file.Close()
+			continue
+		}
+		file.Close()
+
+		data := rec.Encode()
 		if _, err := tmpFile.Write(data); err != nil {
-			db.indexLock.RUnlock()
 			return fmt.Errorf("compact: write failed: %w", err)
 		}
 
 		newIndex[key] = recordRef{
-			file:   tmpPath,
+			file:   tmpPath, // Тимчасовий шлях, буде змінено після перейменування
 			offset: offset,
 		}
 		offset += int64(len(data))
 	}
-	db.indexLock.RUnlock()
 
 	if err := tmpFile.Close(); err != nil {
 		return fmt.Errorf("compact: failed to close tmp file: %w", err)
@@ -238,31 +276,36 @@ func (db *Db) Compact() error {
 		return fmt.Errorf("compact: close current-data: %w", err)
 	}
 
+	// Видаляємо всі старі сегменти та current-data
 	for _, seg := range db.segments {
 		_ = os.Remove(seg)
 	}
 	_ = os.Remove(filepath.Join(db.dir, outFileName))
 
+	// Перейменовуємо тимчасовий файл у новий сегмент
 	newSegName := fmt.Sprintf("segment-%d", len(db.segments)+1)
 	newSegPath := filepath.Join(db.dir, newSegName)
 	if err := os.Rename(tmpPath, newSegPath); err != nil {
 		return fmt.Errorf("compact: rename failed: %w", err)
 	}
 
+	// Оновлюємо індекс з новими шляхами
 	for key, ref := range newIndex {
 		ref.file = newSegPath
 		newIndex[key] = ref
 	}
 
+	// Відкриваємо новий current-data
 	out, err := os.OpenFile(filepath.Join(db.dir, outFileName), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return fmt.Errorf("compact: reopen current-data: %w", err)
 	}
 
+	// Оновлюємо стан бази даних
 	db.out = out
 	db.outOffset = 0
 	db.index = newIndex
-	db.segments = []string{newSegPath}
+	db.segments = []string{newSegPath} // Зберігаємо лише новий компактний сегмент
 
 	return nil
 }
