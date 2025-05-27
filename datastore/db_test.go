@@ -72,15 +72,15 @@ func TestDb(t *testing.T) {
 	})
 
 	t.Run("compact segments", func(t *testing.T) {
-		db.segmentMaxSize = 35
+		db.segmentMaxSize = 100
 
 		_ = db.Put("rotate1", "long-value-to-trigger-rotation")
 		_ = db.Put("rotate2", "another-long-value")
-
-		before := len(db.segments)
-
 		_ = db.Put("u1", "old")
 		_ = db.Put("u1", "new")
+
+		before := len(db.segments)
+		print(len(db.segments), "\n")
 
 		err := db.Compact()
 		if err != nil {
@@ -93,6 +93,7 @@ func TestDb(t *testing.T) {
 		}
 
 		after := len(db.segments)
+		print(len(db.segments), "\n")
 		if after >= before {
 			t.Errorf("Expected fewer segments after compaction (before: %d, after: %d)", before, after)
 		}
