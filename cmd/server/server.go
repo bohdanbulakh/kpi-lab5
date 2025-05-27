@@ -11,8 +11,8 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/bohdanbulakh/kpi-lab4/httptools"
-	"github.com/bohdanbulakh/kpi-lab4/signal"
+	"github.com/bohdanbulakh/kpi-lab5/httptools"
+	"github.com/bohdanbulakh/kpi-lab5/signal"
 )
 
 var port = flag.Int("port", 8080, "server port")

@@ -1,4 +1,4 @@
-module github.com/bohdanbulakh/kpi-lab4
+module github.com/bohdanbulakh/kpi-lab5
 
 go 1.24
 

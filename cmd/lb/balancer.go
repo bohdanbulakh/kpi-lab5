@@ -10,8 +10,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bohdanbulakh/kpi-lab4/httptools"
-	"github.com/bohdanbulakh/kpi-lab4/signal"
+	"github.com/bohdanbulakh/kpi-lab5/httptools"
+	"github.com/bohdanbulakh/kpi-lab5/signal"
 )
 
 var (

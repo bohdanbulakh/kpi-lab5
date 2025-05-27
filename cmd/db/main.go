@@ -2,7 +2,7 @@ package main
 
 import (
 	"encoding/json"
-	"github.com/bohdanbulakh/kpi-lab4/datastore"
+	"github.com/bohdanbulakh/kpi-lab5/datastore"
 	"log"
 	"net/http"
 	"os"
