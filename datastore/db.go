@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"sync"
 )
 
 const outFileName = "current-data"
@@ -21,13 +22,23 @@ type recordRef struct {
 
 type hashIndex map[string]recordRef
 
+type writeRequest struct {
+	key   string
+	value string
+	resp  chan error
+}
+
 type Db struct {
 	out            *os.File
 	outOffset      int64
 	index          hashIndex
+	indexLock      sync.RWMutex
 	segments       []string
 	segmentMaxSize int64
 	dir            string
+
+	writeChan chan writeRequest
+	quitChan  chan struct{}
 }
 
 func Open(dir string, maxSize int64) (*Db, error) {
@@ -41,12 +52,79 @@ func Open(dir string, maxSize int64) (*Db, error) {
 		dir:            dir,
 		index:          make(hashIndex),
 		segmentMaxSize: maxSize,
+		writeChan:      make(chan writeRequest),
+		quitChan:       make(chan struct{}),
 	}
 	err = db.recover()
 	if err != nil && err != io.EOF {
 		return nil, err
 	}
+
+	go db.writerLoop()
+
 	return db, nil
+}
+
+func (db *Db) writerLoop() {
+	for {
+		select {
+		case req := <-db.writeChan:
+			err := db.performPut(req.key, req.value)
+			req.resp <- err
+		case <-db.quitChan:
+			return
+		}
+	}
+}
+
+func (db *Db) performPut(key, value string) error {
+	e := entry{key: key, value: value}
+	n, err := db.out.Write(e.Encode())
+	if err != nil {
+		return err
+	}
+
+	db.indexLock.Lock()
+	db.index[key] = recordRef{file: db.out.Name(), offset: db.outOffset}
+	db.outOffset += int64(n)
+	db.indexLock.Unlock()
+
+	if db.outOffset >= db.segmentMaxSize {
+		return db.rotateSegment()
+	}
+	return nil
+}
+
+func (db *Db) Put(key, value string) error {
+	resp := make(chan error)
+	db.writeChan <- writeRequest{key: key, value: value, resp: resp}
+	return <-resp
+}
+
+func (db *Db) Get(key string) (string, error) {
+	db.indexLock.RLock()
+	ref, ok := db.index[key]
+	db.indexLock.RUnlock()
+
+	if !ok {
+		return "", ErrNotFound
+	}
+	file, err := os.Open(ref.file)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+
+	_, err = file.Seek(ref.offset, 0)
+	if err != nil {
+		return "", err
+	}
+
+	var record entry
+	if _, err = record.DecodeFromReader(bufio.NewReader(file)); err != nil {
+		return "", err
+	}
+	return record.value, nil
 }
 
 func (db *Db) recover() error {
@@ -87,54 +165,6 @@ func (db *Db) recover() error {
 	return nil
 }
 
-func (db *Db) Close() error {
-	return db.out.Close()
-}
-
-func (db *Db) Get(key string) (string, error) {
-	ref, ok := db.index[key]
-	if !ok {
-		return "", ErrNotFound
-	}
-	file, err := os.Open(ref.file)
-	if err != nil {
-		return "", err
-	}
-	defer file.Close()
-
-	_, err = file.Seek(ref.offset, 0)
-	if err != nil {
-		return "", err
-	}
-
-	var record entry
-	if _, err = record.DecodeFromReader(bufio.NewReader(file)); err != nil {
-		return "", err
-	}
-	return record.value, nil
-}
-
-func (db *Db) Put(key, value string) error {
-	e := entry{key: key, value: value}
-	n, err := db.out.Write(e.Encode())
-	if err == nil {
-		db.index[key] = recordRef{file: db.out.Name(), offset: db.outOffset}
-		db.outOffset += int64(n)
-		if db.outOffset >= db.segmentMaxSize {
-			return db.rotateSegment()
-		}
-	}
-	return err
-}
-
-func (db *Db) Size() (int64, error) {
-	info, err := db.out.Stat()
-	if err != nil {
-		return 0, err
-	}
-	return info.Size(), nil
-}
-
 func (db *Db) rotateSegment() error {
 	if err := db.out.Close(); err != nil {
 		return err
@@ -154,6 +184,19 @@ func (db *Db) rotateSegment() error {
 	return nil
 }
 
+func (db *Db) Size() (int64, error) {
+	info, err := db.out.Stat()
+	if err != nil {
+		return 0, err
+	}
+	return info.Size(), nil
+}
+
+func (db *Db) Close() error {
+	close(db.quitChan)
+	return db.out.Close()
+}
+
 func (db *Db) Compact() error {
 	tmpPath := filepath.Join(db.dir, "segment-compacting")
 	tmpFile, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0o600)
@@ -165,6 +208,7 @@ func (db *Db) Compact() error {
 	newIndex := make(hashIndex)
 	var offset int64
 
+	db.indexLock.RLock()
 	for key := range db.index {
 		val, err := db.Get(key)
 		if err != nil {
@@ -174,6 +218,7 @@ func (db *Db) Compact() error {
 		data := e.Encode()
 
 		if _, err := tmpFile.Write(data); err != nil {
+			db.indexLock.RUnlock()
 			return fmt.Errorf("compact: write failed: %w", err)
 		}
 
@@ -182,6 +227,11 @@ func (db *Db) Compact() error {
 			offset: offset,
 		}
 		offset += int64(len(data))
+	}
+	db.indexLock.RUnlock()
+
+	if err := tmpFile.Close(); err != nil {
+		return fmt.Errorf("compact: failed to close tmp file: %w", err)
 	}
 
 	if err := db.out.Close(); err != nil {
