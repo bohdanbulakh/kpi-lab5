@@ -72,10 +72,8 @@ func TestDb(t *testing.T) {
 	})
 
 	t.Run("compact segments", func(t *testing.T) {
-		// Ставимо малий розмір сегмента, щоб ротація гарантовано спрацювала
 		db.segmentMaxSize = 35
 
-		// Примусово викликаємо ротацію сегментів
 		_ = db.Put("rotate1", "long-value-to-trigger-rotation")
 		_ = db.Put("rotate2", "another-long-value")
 

@@ -155,7 +155,6 @@ func (db *Db) rotateSegment() error {
 }
 
 func (db *Db) Compact() error {
-	// Створюємо тимчасовий новий файл для злиття
 	tmpPath := filepath.Join(db.dir, "segment-compacting")
 	tmpFile, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0o600)
 	if err != nil {
@@ -185,36 +184,31 @@ func (db *Db) Compact() error {
 		offset += int64(len(data))
 	}
 
-	// Закриваємо поточний файл і старі сегменти
 	if err := db.out.Close(); err != nil {
 		return fmt.Errorf("compact: close current-data: %w", err)
 	}
 
 	for _, seg := range db.segments {
-		_ = os.Remove(seg) // ігноруємо помилки видалення
+		_ = os.Remove(seg)
 	}
 	_ = os.Remove(filepath.Join(db.dir, outFileName))
 
-	// Перейменовуємо тимчасовий файл у новий сегмент
 	newSegName := fmt.Sprintf("segment-%d", len(db.segments)+1)
 	newSegPath := filepath.Join(db.dir, newSegName)
 	if err := os.Rename(tmpPath, newSegPath); err != nil {
 		return fmt.Errorf("compact: rename failed: %w", err)
 	}
 
-	// 🛠 Оновлюємо file-шляхи у новому індексі
 	for key, ref := range newIndex {
 		ref.file = newSegPath
 		newIndex[key] = ref
 	}
 
-	// Відкриваємо новий out файл
 	out, err := os.OpenFile(filepath.Join(db.dir, outFileName), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return fmt.Errorf("compact: reopen current-data: %w", err)
 	}
 
-	// Оновлюємо стан бази
 	db.out = out
 	db.outOffset = 0
 	db.index = newIndex
